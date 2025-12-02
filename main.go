@@ -3,25 +3,21 @@ package main
 import (
 	"fmt"
 	"net/http"
+
+	"github.com/gustavbagger/Chirpy/handlers"
 )
 
 func main() {
 	//Set up the defaults for serving files via urls like /app/foo
 	mux := http.NewServeMux()
-	file_server := http.FileServer(http.Dir("."))
-	mux.Handle("/app/", http.StripPrefix("/app", file_server))
+	file_server := http.StripPrefix("/app", http.FileServer(http.Dir(".")))
 
-	/*
-		A special handler which can be called via /healthz
-		This is not a file but code that runs in response to a request
-		Examples include api usage, server status etc.
-	*/
-	handler := func(w http.ResponseWriter, req *http.Request) {
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
-	}
-	mux.HandleFunc("/healthz", handler)
+	//Includes middleware to count hits
+	var apiCfg handlers.ApiConfig
+	mux.Handle("/app/", apiCfg.MiddlewareMetricsInc(file_server))
+
+	mux.HandleFunc("/healthz", handlers.HandlerHealthz)
+	mux.HandleFunc("/metrics", apiCfg.HandlerMetrics)
 
 	port := "8080"
 	server := http.Server{

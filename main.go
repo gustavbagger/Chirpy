@@ -14,7 +14,12 @@ type apiConfig struct {
 	fileserverHits atomic.Int32
 }
 
-// Counts fileserver hits and increments every time it is called
+/*
+Counts fileserver hits and increments every time it is called
+makes a http.Handler using a ordinary function
+This function needs to take a responsewriter and request to match signatures
+The function increments fileserverhits, then does what next normally does
+*/
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cfg.fileserverHits.Add(1)
@@ -51,9 +56,9 @@ func main() {
 	// Includes middleware to count hits
 	mux.Handle("/app/", apiCfg.middlewareMetricsInc(file_server))
 
-	mux.HandleFunc("/reset", apiCfg.handlerReset)
-	mux.HandleFunc("/healthz", handlerHealthz)
-	mux.HandleFunc("/metrics", apiCfg.handlerMetrics)
+	mux.HandleFunc("POST /api/reset", apiCfg.handlerReset)
+	mux.HandleFunc("GET /api/healthz", handlerHealthz)
+	mux.HandleFunc("GET /api/metrics", apiCfg.handlerMetrics)
 
 	port := "8080"
 	server := http.Server{

@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"sync/atomic"
 )
@@ -12,6 +14,21 @@ Across multiple go-routines/http requests
 */
 type apiConfig struct {
 	fileserverHits atomic.Int32
+}
+
+// think tweet, sent to server
+type chirp struct {
+	Body string `json:"body"`
+}
+
+// json error
+type jsonError struct {
+	Err string `json:"error"`
+}
+
+// json error
+type chirpValid struct {
+	Valid bool `json:"valid"`
 }
 
 /*
@@ -38,12 +55,56 @@ func handlerHealthz(w http.ResponseWriter, req *http.Request) {
 }
 func (cfg *apiConfig) handlerMetrics(w http.ResponseWriter, req *http.Request) {
 	w.WriteHeader(http.StatusOK)
-	str := fmt.Sprintf("Hits: %v", cfg.fileserverHits.Load())
-	w.Write([]byte(str))
+	hits := cfg.fileserverHits.Load()
+	html := fmt.Sprintf(`
+	<html>
+  		<body>
+    		<h1>Welcome, Chirpy Admin</h1>
+    		<p>Chirpy has been visited %d times!</p>
+  		</body>
+	</html>
+	`, hits)
+
+	w.Header().Set("Content-Type", "text/html")
+	w.Write([]byte(html))
 }
 func (cfg *apiConfig) handlerReset(w http.ResponseWriter, req *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	cfg.fileserverHits.Store(0)
+}
+
+func handlerValidate(w http.ResponseWriter, req *http.Request) {
+
+	decoder := json.NewDecoder(req.Body)
+	var chp chirp
+	w.Header().Set("Content-Type", "application/json")
+	var errorstr string
+	if err := decoder.Decode(&chp); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		errorstr = fmt.Sprintf("error: %v", err)
+	} else if len(chp.Body) > 140 {
+		w.WriteHeader(http.StatusBadRequest)
+		errorstr = "error: chirp too long"
+	} else {
+		w.WriteHeader(http.StatusOK)
+	}
+	if errorstr != "" {
+		data, err := json.Marshal(jsonError{Err: errorstr})
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			log.Printf("error: %v", err)
+			return
+		}
+		w.Write(data)
+	} else {
+		data, err := json.Marshal(chirpValid{Valid: true})
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			log.Printf("error: %v", err)
+			return
+		}
+		w.Write(data)
+	}
 }
 
 var apiCfg apiConfig
@@ -56,9 +117,10 @@ func main() {
 	// Includes middleware to count hits
 	mux.Handle("/app/", apiCfg.middlewareMetricsInc(file_server))
 
-	mux.HandleFunc("POST /api/reset", apiCfg.handlerReset)
+	mux.HandleFunc("POST /admin/reset", apiCfg.handlerReset)
 	mux.HandleFunc("GET /api/healthz", handlerHealthz)
-	mux.HandleFunc("GET /api/metrics", apiCfg.handlerMetrics)
+	mux.HandleFunc("GET /admin/metrics", apiCfg.handlerMetrics)
+	mux.HandleFunc("POST /api/validate_chirp", handlerValidate)
 
 	port := "8080"
 	server := http.Server{

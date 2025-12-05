@@ -1,11 +1,19 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"slices"
+	"strings"
 	"sync/atomic"
+
+	"github.com/gustavbagger/Chirpy/internal/database"
+	"github.com/joho/godotenv"
+	_ "github.com/lib/pq"
 )
 
 /*
@@ -14,6 +22,7 @@ Across multiple go-routines/http requests
 */
 type apiConfig struct {
 	fileserverHits atomic.Int32
+	dbQueries      *database.Queries
 }
 
 // think tweet, sent to server
@@ -26,9 +35,32 @@ type jsonError struct {
 	Err string `json:"error"`
 }
 
-// json error
-type chirpValid struct {
-	Valid bool `json:"valid"`
+// cleaned chirp
+type chirpClean struct {
+	CleanedBody string `json:"cleaned_body"`
+}
+
+func respondWithError(w http.ResponseWriter, code int, msg string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	data, err := json.Marshal(jsonError{Err: msg})
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		log.Printf("error: %v", err)
+		return
+	}
+	w.Write(data)
+}
+func respondWithJSON(w http.ResponseWriter, code int, payload any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	data, err := json.Marshal(payload)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		log.Printf("error: %v", err)
+		return
+	}
+	w.Write(data)
 }
 
 /*
@@ -77,39 +109,45 @@ func handlerValidate(w http.ResponseWriter, req *http.Request) {
 
 	decoder := json.NewDecoder(req.Body)
 	var chp chirp
-	w.Header().Set("Content-Type", "application/json")
-	var errorstr string
 	if err := decoder.Decode(&chp); err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		errorstr = fmt.Sprintf("error: %v", err)
-	} else if len(chp.Body) > 140 {
-		w.WriteHeader(http.StatusBadRequest)
-		errorstr = "error: chirp too long"
-	} else {
-		w.WriteHeader(http.StatusOK)
+		respondWithError(w, http.StatusInternalServerError, fmt.Sprintln(err))
+		return
 	}
-	if errorstr != "" {
-		data, err := json.Marshal(jsonError{Err: errorstr})
-		if err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			log.Printf("error: %v", err)
-			return
-		}
-		w.Write(data)
-	} else {
-		data, err := json.Marshal(chirpValid{Valid: true})
-		if err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			log.Printf("error: %v", err)
-			return
-		}
-		w.Write(data)
+	if len(chp.Body) > 140 {
+		respondWithError(w, http.StatusBadRequest, "chirp too long")
+		return
 	}
+	words := strings.Split(chp.Body, " ")
+	bad_words := []string{"kerfuffle", "sharbert", "fornax"}
+	var cleaned_words []string
+	for _, word := range words {
+		if slices.Contains(bad_words, strings.ToLower(word)) {
+			cleaned_words = append(cleaned_words, "****")
+		} else {
+			cleaned_words = append(cleaned_words, word)
+		}
+	}
+	payload := chirpClean{CleanedBody: strings.Join(cleaned_words, " ")}
+
+	respondWithJSON(w, http.StatusOK, payload)
+
 }
 
 var apiCfg apiConfig
 
 func main() {
+	//Load env file into environment variables
+	godotenv.Load()
+	dbURL := os.Getenv("DB_URL")
+
+	// open connection to database
+	db, err1 := sql.Open("postgres", dbURL)
+	if err1 != nil {
+		log.Println(err1)
+		return
+	}
+	apiCfg.dbQueries = database.New(db)
+
 	//Set up the defaults for serving files via urls like /app/foo
 	mux := http.NewServeMux()
 	file_server := http.StripPrefix("/app", http.FileServer(http.Dir(".")))
@@ -127,8 +165,8 @@ func main() {
 		Handler: mux,
 		Addr:    ":" + port,
 	}
-	err := server.ListenAndServe()
-	if err != nil {
+	err2 := server.ListenAndServe()
+	if err2 != nil {
 		fmt.Errorf("error: Could not serve server")
 		return
 	}
